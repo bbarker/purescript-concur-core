@@ -19,10 +19,10 @@ widgetSpec =
       it "should cancel running effects when the widget returns a value" do
         ref <- liftEffect $ Ref.new ""
         { views } <- runWidgetAsAff $ orr
-          [ affAction "a" do
+          [ affAction "a" true do
                delay (Milliseconds 100.0)
                liftEffect $ Ref.write "a" ref
-          , affAction "b" do
+          , affAction "b" true do
                delay (Milliseconds 150.0)
                liftEffect $ Ref.write "b" ref
           ]
@@ -35,8 +35,8 @@ widgetSpec =
         ref <- liftEffect (Ref.new 0)
         { result, views } <- runWidgetAsAff $ orr
           [ do
-               affAction "a0" $ delay (Milliseconds 100.0)
-               affAction "a1" $ delay (Milliseconds 100.0)
+               affAction "a0" true $ delay (Milliseconds 100.0)
+               affAction "a1" true $ delay (Milliseconds 100.0)
                pure "a"
           , affAction "b" do
                liftEffect $ Ref.modify_ (_ + 1) ref

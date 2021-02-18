@@ -13,11 +13,12 @@ import Control.Monad.Free (Free, wrap, resume)
 import Control.Parallel.Class (parallel, sequential)
 import Control.Plus (alt)
 import Data.Either (Either(..))
+import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.AVar (empty, tryPut) as EVar
 import Effect.Aff.AVar (take) as AVar
 import Effect.Aff.Class (liftAff)
-import Prelude (Unit, bind, map, pure, void, ($))
+import Prelude (Unit, bind, map, pure, void, ($), (<$>))
 
 -- Helpers for some very common use of unsafe blocking io
 
@@ -39,9 +40,8 @@ mkNodeWidget' mkView w = case resume w of
   Left (WidgetStepView wsr) -> wrap $ WidgetStepEff do
       var <- EVar.empty
       let eventHandler = (\a -> void (EVar.tryPut (pure a) var))
-      let cont' = sequential (alt (parallel (liftAff (AVar.take var)))
-                                  (parallel (map (mkNodeWidget' mkView) wsr.cont))
-                             )
+      let cont' = sequential (alt (parallel (Tuple true <$> (liftAff $ AVar.take var)))
+                                  (parallel (map (\x -> Tuple (fst x) (mkNodeWidget' mkView (snd x))) wsr.cont)))                             
       pure $ wrap $ WidgetStepView
         { view: mkView eventHandler wsr.view
         , cont: cont'
@@ -55,5 +55,5 @@ mkLeafWidget mkView = Widget $ wrap $ WidgetStepEff do
   var <- EVar.empty
   pure $ wrap $ WidgetStepView
     { view: mkView (\a -> void (EVar.tryPut (pure a) var))
-    , cont: liftAff (AVar.take var)
+    , cont: Tuple true <$> liftAff (AVar.take var)
     }

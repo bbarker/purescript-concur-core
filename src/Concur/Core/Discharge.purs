@@ -2,12 +2,14 @@ module Concur.Core.Discharge where
 
 import Prelude
 
-import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget)
-import Control.Monad.Free (resume, wrap)
+import Concur.Core.Types (Widget(..), WidgetStep(..), unWidget, WidgetStepRecord)
+import Control.Monad.Free (Free, resume, wrap)
 import Data.Either (Either(..))
+import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (runAff_)
+import Effect.Class (liftEffect)
+import Effect.Aff (never, runAff_)
 import Effect.Exception (Error)
 
 -- Widget discharge strategies
@@ -18,17 +20,17 @@ import Effect.Exception (Error)
 discharge ::
   forall a v.
   Monoid v =>
-  (Either Error (Widget v a) -> Effect Unit) ->
-  Widget v a ->
-  Effect v
-discharge handler (Widget w) = case resume w of
+  (Either Error (Tuple Boolean (Widget v a)) -> Effect Unit) ->
+  Tuple Boolean (Widget v a) ->
+  Effect (Maybe v)
+discharge handler (Tuple render (Widget w)) = case resume w of
   Right _ -> pure mempty
   Left (WidgetStepEff eff) -> do
       w' <- eff
-      discharge handler (Widget w')
+      discharge handler (Tuple render (Widget w'))
   Left (WidgetStepView ws) -> do
-      runAff_ (handler <<< map Widget) ws.cont
-      pure ws.view
+      runAff_ (handler <<< (map <<< map) Widget) ws.cont
+      pure $ if render then Just ws.view else Nothing
 
 -- | Discharge only the top level blocking effect of a widget (if any) to get access to the view
 -- | Returns the view, and the remaining widget
@@ -40,9 +42,21 @@ dischargePartialEffect ::
 dischargePartialEffect w = case resume (unWidget w) of
   Right _ -> pure (Tuple w mempty)
   Left (WidgetStepEff eff) -> do
-      w' <- eff
-      dischargePartialEffect (Widget w')
+    w' <- liftEffect eff
+    dischargePartialEffect (Widget w')
   Left (WidgetStepView ws) -> pure (Tuple (Widget (wrap (WidgetStepView ws))) ws.view)
+
+resumeWidgetStepRecord ::
+  forall a v.
+  Monoid v =>
+  Widget v a ->
+  Effect (WidgetStepRecord v (Free (WidgetStep v) a))
+resumeWidgetStepRecord w = case resume (unWidget w) of
+  Right _ -> pure { view: mempty, cont: Tuple false <$> never }
+  Left (WidgetStepEff eff) -> do
+      w' <- eff
+      resumeWidgetStepRecord (Widget w')
+  Left (WidgetStepView ws) -> pure ws
 
 {-
 -- | Discharge a widget, forces async resolution of the continuation.

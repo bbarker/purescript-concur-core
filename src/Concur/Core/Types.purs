@@ -16,7 +16,7 @@ import Data.Either (Either(..))
 import Data.FoldableWithIndex (foldlWithIndex, foldrWithIndex)
 import Data.Maybe (Maybe(Nothing, Just), fromMaybe)
 import Data.Semigroup.Foldable (foldMap1)
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Effect.AVar (empty, tryPut, tryTake) as EVar
 import Effect.Aff (Aff, effectCanceler, makeAff, never, runAff_)
@@ -27,7 +27,7 @@ import Effect.Console (log)
 import Effect.Exception (Error)
 
 type WidgetStepRecord v a
-  = {view :: v, cont :: Aff a}
+  = {view :: v, cont :: Aff (Tuple Boolean a)}
 
 data WidgetStep v a
   = WidgetStepEff (Effect a)
@@ -42,10 +42,10 @@ data WidgetStep v a
 -- derive instance widgetStepFunctor :: Functor (WidgetStep v)
 instance functorWidgetStep :: Functor (WidgetStep v) where
   map f (WidgetStepEff e) = WidgetStepEff (map f e)
-  map f (WidgetStepView w) = WidgetStepView (w { cont = map f w.cont })
+  map f (WidgetStepView w) = WidgetStepView (w { cont = (map <<< map) f w.cont })
 
 displayStep :: forall a v. v -> WidgetStep v a
-displayStep v = WidgetStepView { view: v, cont: never }
+displayStep v = WidgetStepView { view: v, cont: never}
 
 newtype Widget v a
   = Widget (Free (WidgetStep v) a)
@@ -138,8 +138,8 @@ instance widgetMultiAlternative ::
       forall v' a.
       Monoid v' =>
       NonEmptyArray (WidgetStepRecord v' (Free (WidgetStep v') a)) ->
-      NonEmptyArray (Aff (Free (WidgetStep v') a)) ->
-      Aff (Free (WidgetStep v') a)
+      NonEmptyArray (Aff (Tuple Boolean (Free (WidgetStep v') a))) ->
+      Aff (Tuple Boolean (Free (WidgetStep v') a))
     merge ws wscs = do
       let wsm = map (wrap <<< WidgetStepView) ws
       -- TODO: We know the array is non-empty. We need something like foldl1WithIndex.
@@ -147,7 +147,7 @@ instance widgetMultiAlternative ::
         alt (parallel (map (Tuple i) w)) r) empty wscs)
       -- TODO: All the Aff in ws is already discharged. Use a more efficient way than combine to process it
       -- TODO: Also, more importantly, we would like to not have to cancel running fibers unless one of them returns a result
-      pure $ combine (fromMaybe wsm (NEA.updateAt i e wsm))
+      map (Tuple (fst e)) (pure $ combine (fromMaybe wsm (NEA.updateAt i (snd e) wsm)))
 
 
 -- | Run multiple widgets in parallel until *all* finish, and collect their outputs
@@ -214,16 +214,17 @@ effAction = Widget <<< liftF <<< WidgetStepEff
 affAction ::
   forall a v.
   v ->
+  Boolean ->
   Aff a ->
   Widget v a
-affAction v aff = Widget $ wrap $ WidgetStepEff do
+affAction v render aff = Widget $ wrap $ WidgetStepEff do
   var <- EVar.empty
   runAff_ (handler var) aff
   -- Detect synchronous resolution
   ma <- EVar.tryTake var
   pure case ma of
     Just a -> pure a
-    Nothing -> liftF $ WidgetStepView { view: v, cont: AVar.take var }
+    Nothing -> liftF $ WidgetStepView { view: v, cont: (map <<< map) (Tuple render) AVar.take var }
   where
   -- TODO: allow client code to handle aff failures
   handler _ (Left e) = log ("Aff failed - " <> show e)
@@ -233,13 +234,14 @@ affAction v aff = Widget $ wrap $ WidgetStepEff do
 asyncAction ::
   forall v a.
   v ->
+  Boolean ->
   ((Either Error a -> Effect Unit) -> Effect (Effect Unit)) ->
   Widget v a
-asyncAction v handler = affAction v (makeAff (map effectCanceler <<< handler))
+asyncAction v render handler = affAction v render (makeAff (map effectCanceler <<< handler))
 
 instance widgetMonadEff :: (Monoid v) => MonadEffect (Widget v) where
   liftEffect = effAction
 
 instance widgetMonadAff :: (Monoid v) => MonadAff (Widget v) where
-  liftAff = affAction mempty
+  liftAff = affAction mempty true
     -- Widget $ liftF $ WidgetStep $ Right { view: mempty, cont: aff }
